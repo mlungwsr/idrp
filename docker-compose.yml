@@ -6,11 +6,11 @@ services:
     ports:
       - "5001:5001"
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=production
       - AWS_REGION=us-west-2
       - PORT=5001
     volumes:
       - .:/app
       - /app/node_modules
       - /app/client/node_modules
-    command: npm run dev
+    command: npm start
