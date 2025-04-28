@@ -8,11 +8,9 @@ services:
     environment:
       - NODE_ENV=development
       - AWS_REGION=us-west-2
-      - AWS_PROFILE=IDRP-EC2-Role
       - PORT=5001
     volumes:
       - .:/app
       - /app/node_modules
       - /app/client/node_modules
-      - ~/.aws:/home/nodeuser/.aws:ro
     command: npm run dev
