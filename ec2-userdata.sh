@@ -2,22 +2,24 @@
 set -e
 
 # Update system packages
-yum update -y
+dnf update -y
 
 # Install Git
-yum install -y git
+dnf install -y git
 
 # Install Node.js
-curl -sL https://rpm.nodesource.com/setup_16.x | bash -
-yum install -y nodejs
+dnf install -y nodejs
 
-# Install Docker (if needed for your application)
-yum install -y docker
+# Install Docker
+dnf install -y docker
 systemctl start docker
 systemctl enable docker
 
+# Add ec2-user to docker group
+usermod -aG docker ec2-user
+
 # Install Docker Compose
-curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+curl -L "https://github.com/docker/compose/releases/download/v2.23.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
 
 # Clone the repository
@@ -34,8 +36,3 @@ chmod +x setup-parameters.sh
 
 # Start the application using Docker Compose
 docker-compose up -d
-
-# Alternatively, if not using Docker:
-# npm install
-# npm run build
-# npm start
