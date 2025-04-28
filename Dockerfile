@@ -10,8 +10,8 @@ RUN apk add --no-cache python3 make g++ curl aws-cli
 # Copy package files first for better caching
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install dependencies (including dev dependencies)
+RUN npm ci
 
 # Copy the rest of the application
 COPY . .
