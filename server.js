@@ -129,6 +129,10 @@ AWS.config.update({ region: process.env.AWS_REGION || 'us-west-2' });
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, 'client/build')));
 
 // Initialize AWS services
 const s3 = new AWS.S3({
@@ -600,6 +604,11 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// Serve static files from the React app in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, 'client/build')));
+}
+
 // Initialize the database connection and start the server
 const initializeApp = async () => {
   try {
@@ -665,6 +674,15 @@ const initializeApp = async () => {
       console.log(`AWS Region: ${process.env.AWS_REGION || 'us-west-2'}`);
       console.log(`S3 Bucket: ${process.env.S3_BUCKET_NAME || 'idrp-000001-dev'}`);
       console.log(`Database: ${process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com'}`);
+    });
+    
+    // Catch-all handler for any request that doesn't match the ones above
+    app.get('*', (req, res) => {
+      if (process.env.NODE_ENV === 'production') {
+        res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
+      } else {
+        res.status(200).send('IDRP API Server is running. In development mode, frontend routes are served by React dev server.');
+      }
     });
   } catch (error) {
     console.error('Failed to connect to database:', error);
