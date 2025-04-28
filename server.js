@@ -31,6 +31,8 @@ async function loadParametersFromSSM() {
         console.log(`Loaded parameter: ${paramName}`);
       });
       console.log('Successfully loaded all parameters from Parameter Store');
+      console.log('DB_HOST:', process.env.DB_HOST);
+
     } else {
       console.log('No parameters found in Parameter Store, using environment variables from .env file');
     }
@@ -48,16 +50,56 @@ const upload = multer({ storage: multer.memoryStorage() });
 // Function to reset database connections before starting the server
 const resetDatabaseConnections = async () => {
   try {
-    // Create a separate connection to reset connections
+    // Create a separate connection to reset connections using IAM authentication
     const mysql = require('mysql2');
+    
+    // Debug the DB_HOST value
+    console.log('DB_HOST value for reset connection:', process.env.DB_HOST);
+    
+    // Try using regular password authentication if IAM fails
+    let password = process.env.DB_PASSWORD;
+    let usingIAM = false;
+    
+    // If no password is set, try to get IAM auth token
+    if (!password) {
+      try {
+        usingIAM = true;
+        password = await new Promise((resolve, reject) => {
+          signer.getAuthToken({}, (err, token) => {
+            if (err) {
+              console.error('Error getting auth token for reset connection:', err);
+              reject(err);
+            } else {
+              console.log('Successfully obtained IAM auth token for reset connection');
+              resolve(token);
+            }
+          });
+        });
+      } catch (tokenErr) {
+        console.error('Failed to get IAM token, will try without authentication:', tokenErr);
+        password = '';
+      }
+    }
+    
+    // Create connection with password or IAM token
     const resetConnection = mysql.createConnection({
-      host: process.env.DB_HOST,
-      user: 'admin', // Use admin user for this operation
-      password: 'FTUmO16nRBQI8S5FE8YI',
+      host: process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com',
+      port: 3306,
+      user: process.env.DB_USER || 'idrp_app',
+      password: password,
+      database: process.env.DB_NAME || 'idrp',
       ssl: { rejectUnauthorized: false }
     });
     
     console.log('Attempting to reset database connections...');
+    console.log('Connection config:', {
+      host: resetConnection.config.host,
+      port: resetConnection.config.port,
+      user: resetConnection.config.user,
+      database: resetConnection.config.database,
+      usingIAM: usingIAM,
+      hasPassword: !!password
+    });
     
     resetConnection.connect((err) => {
       if (err) {
@@ -169,66 +211,87 @@ const s3 = new AWS.S3({
 
 // Set up RDS signer for IAM authentication - will use the region from AWS.config
 const signer = new AWS.RDS.Signer({
-  hostname: process.env.DB_HOST,
+  region: process.env.AWS_REGION || 'us-west-2',
+  hostname: process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com',
   port: 3306,
   username: process.env.DB_USER || 'idrp_app'
 });
 
 // MySQL database connection pool with IAM authentication and detailed logging
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER || 'idrp_app',
-  ssl: { 
-    rejectUnauthorized: false  // This allows self-signed certificates
-  },
-  authPlugins: {
-    mysql_clear_password: () => async () => {
-      // Get the IAM authentication token with detailed logging
-      return new Promise((resolve, reject) => {
-        console.log(`Attempting to get auth token for user: ${process.env.DB_USER || 'idrp_app'}`);
-        console.log(`Using host: ${process.env.DB_HOST}`);
-        
-        signer.getAuthToken({}, (err, token) => {
-          if (err) {
-            console.error('Error getting auth token:', err);
-            reject(err);
-          } else {
-            console.log('Successfully obtained IAM auth token');
-            console.log(`Token length: ${token.length} characters`);
-            console.log(`Token starts with: ${token.substring(0, 10)}...`);
-            resolve(token);
-          }
+const createPool = async () => {
+  try {
+    // Try using regular password authentication if available
+    let password = process.env.DB_PASSWORD;
+    let usingIAM = false;
+    
+    // If no password is set, try to get IAM auth token
+    if (!password) {
+      try {
+        usingIAM = true;
+        password = await new Promise((resolve, reject) => {
+          signer.getAuthToken({}, (err, token) => {
+            if (err) {
+              console.error('Error getting auth token for pool:', err);
+              reject(err);
+            } else {
+              console.log('Successfully obtained IAM auth token for pool');
+              resolve(token);
+            }
+          });
         });
-      });
+      } catch (tokenErr) {
+        console.error('Failed to get IAM token for pool, will try without authentication:', tokenErr);
+        password = '';
+      }
     }
-  },
-  database: process.env.DB_NAME || 'idrp',
-  waitForConnections: true,
-  connectionLimit: 5,        // Reduced from 10 to 5
-  queueLimit: 0,             // Unlimited queue
-  enableKeepAlive: true,     // Keep connections alive
-  keepAliveInitialDelay: 10000, // 10 seconds
-  idleTimeout: 30000,        // Reduced from 60000 to 30000 (30 seconds)
-  maxIdle: 5,                // Reduced from 10 to 5
-  acquireTimeout: 10000      // Give up getting a connection after 10 seconds
-});
+    
+    console.log(`Creating database pool with ${usingIAM ? 'IAM authentication' : 'password authentication'}`);
+    
+    return mysql.createPool({
+      host: process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com',
+      port: 3306,
+      user: process.env.DB_USER || 'idrp_app',
+      password: password,
+      ssl: { 
+        rejectUnauthorized: false  // This allows self-signed certificates
+      },
+      database: process.env.DB_NAME || 'idrp',
+      waitForConnections: true,
+      connectionLimit: 5,
+      queueLimit: 0,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000,
+      idleTimeout: 30000,
+      maxIdle: 5
+    });
+  } catch (error) {
+    console.error('Error creating pool:', error);
+    throw error;
+  }
+};
 
-// Add event listeners to monitor the pool
-pool.on('connection', (connection) => {
-  console.log(`New MySQL connection established with thread ID: ${connection.threadId}`);
-});
+// Initialize pool variable to be set later
+let pool;
 
-pool.on('acquire', (connection) => {
-  console.log(`Connection ${connection.threadId} acquired from the pool`);
-});
+// Function to set up pool event listeners
+const setupPoolListeners = (pool) => {
+  // Add event listeners to monitor the pool
+  pool.on('connection', (connection) => {
+    console.log(`New MySQL connection established with thread ID: ${connection.threadId}`);
+  });
 
-pool.on('release', (connection) => {
-  console.log(`Connection ${connection.threadId} released back to the pool`);
-});
+  pool.on('acquire', (connection) => {
+    console.log(`Connection ${connection.threadId} acquired from the pool`);
+  });
 
-pool.on('error', (err) => {
-  console.error('MySQL pool error:', err);
-});
+  pool.on('release', (connection) => {
+    console.log(`Connection ${connection.threadId} released back to the pool`);
+  });
+
+  pool.on('error', (err) => {
+    console.error('MySQL pool error:', err);
+  });
+};
 
 // Add a function to end all connections when the server shuts down
 process.on('SIGINT', async () => {
@@ -645,6 +708,19 @@ const initializeApp = async () => {
   try {
     // Load parameters from SSM
     await loadParametersFromSSM();
+    console.log('DB_HOST after loading:', process.env.DB_HOST);
+    
+    // Set AWS region first to ensure signer works correctly
+    const region = process.env.AWS_REGION || 'us-west-2';
+    AWS.config.update({ region });
+    console.log(`AWS SDK configured to use region: ${region}`);
+    
+    // Create the connection pool with IAM authentication
+    pool = await createPool();
+    console.log('Database connection pool created');
+    
+    // Set up pool event listeners
+    setupPoolListeners(pool);
     
     // Reset database connections
     await resetDatabaseConnections();
@@ -697,6 +773,7 @@ const initializeApp = async () => {
   }
 };
 
+// Start the application
 initializeApp().catch(err => {
   console.error('Application initialization failed:', err);
   process.exit(1);
