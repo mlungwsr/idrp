@@ -27,9 +27,6 @@ cd /home/ec2-user
 git clone https://github.com/mlungwsr/idrp.git
 cd idrp
 
-# Set up AWS credentials for Parameter Store access
-# Assuming the EC2 instance has an IAM role with appropriate permissions
-
 # Run the parameter setup script
 chmod +x setup-parameters.sh
 ./setup-parameters.sh

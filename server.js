@@ -51,7 +51,7 @@ const resetDatabaseConnections = async () => {
     // Create a separate connection to reset connections
     const mysql = require('mysql2');
     const resetConnection = mysql.createConnection({
-      host: process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com',
+      host: process.env.DB_HOST,
       user: 'admin', // Use admin user for this operation
       password: 'FTUmO16nRBQI8S5FE8YI',
       ssl: { rejectUnauthorized: false }
@@ -114,17 +114,45 @@ const resetDatabaseConnections = async () => {
   }
 };
 
-// Set up AWS credentials from profile if specified
-if (process.env.AWS_PROFILE) {
-  console.log(`Using AWS profile: ${process.env.AWS_PROFILE}`);
-  const credentials = new AWS.SharedIniFileCredentials({ profile: process.env.AWS_PROFILE });
-  AWS.config.credentials = credentials;
-} else {
-  console.log('No AWS profile specified, using default credentials provider chain');
-}
+// Use the default credentials provider chain (will use instance profile if available)
+console.log('Using default AWS credentials provider chain');
 
-// Configure AWS region
-AWS.config.update({ region: process.env.AWS_REGION || 'us-west-2' });
+// Configure AWS region - use environment variable if set, otherwise use instance metadata service
+const getRegion = async () => {
+  try {
+    // If AWS_REGION is set in environment, use it
+    if (process.env.AWS_REGION) {
+      console.log(`Using AWS region from environment: ${process.env.AWS_REGION}`);
+      return process.env.AWS_REGION;
+    }
+    
+    // Otherwise, try to get region from instance metadata service
+    console.log('AWS_REGION not set, attempting to get region from instance metadata');
+    const metadata = new AWS.MetadataService();
+    return new Promise((resolve, reject) => {
+      metadata.request('/latest/meta-data/placement/region', (err, region) => {
+        if (err) {
+          console.warn('Could not determine region from instance metadata:', err);
+          console.log('Falling back to us-east-1');
+          resolve('us-east-1');
+        } else {
+          console.log(`Detected region from instance metadata: ${region}`);
+          resolve(region);
+        }
+      });
+    });
+  } catch (error) {
+    console.warn('Error determining region:', error);
+    console.log('Falling back to us-east-1');
+    return 'us-east-1';
+  }
+};
+
+// Set the region asynchronously
+getRegion().then(region => {
+  AWS.config.update({ region });
+  console.log(`AWS SDK configured to use region: ${region}`);
+});
 
 // Middleware
 app.use(cors());
@@ -139,17 +167,16 @@ const s3 = new AWS.S3({
   signatureVersion: 'v4' // Important for presigned URLs
 });
 
-// Set up RDS signer for IAM authentication
+// Set up RDS signer for IAM authentication - will use the region from AWS.config
 const signer = new AWS.RDS.Signer({
-  region: process.env.AWS_REGION || 'us-west-2',
-  hostname: process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com',
+  hostname: process.env.DB_HOST,
   port: 3306,
   username: process.env.DB_USER || 'idrp_app'
 });
 
 // MySQL database connection pool with IAM authentication and detailed logging
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com',
+  host: process.env.DB_HOST,
   user: process.env.DB_USER || 'idrp_app',
   ssl: { 
     rejectUnauthorized: false  // This allows self-signed certificates
@@ -159,9 +186,7 @@ const pool = mysql.createPool({
       // Get the IAM authentication token with detailed logging
       return new Promise((resolve, reject) => {
         console.log(`Attempting to get auth token for user: ${process.env.DB_USER || 'idrp_app'}`);
-        console.log(`Using region: ${process.env.AWS_REGION || 'us-west-2'}`);
-        console.log(`Using host: ${process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com'}`);
-        console.log(`Using AWS profile: ${process.env.AWS_PROFILE || 'default'}`);
+        console.log(`Using host: ${process.env.DB_HOST}`);
         
         signer.getAuthToken({}, (err, token) => {
           if (err) {
@@ -238,10 +263,16 @@ const checkJwt = jwt({
     cache: true,
     rateLimit: true,
     jwksRequestsPerMinute: 5,
-    jwksUri: `https://cognito-idp.${process.env.AWS_REGION || 'us-west-2'}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}/.well-known/jwks.json`
+    jwksUri: async () => {
+      const region = AWS.config.region;
+      return `https://cognito-idp.${region}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}/.well-known/jwks.json`;
+    }
   }),
   audience: process.env.COGNITO_CLIENT_ID,
-  issuer: `https://cognito-idp.${process.env.AWS_REGION || 'us-west-2'}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}`,
+  issuer: async () => {
+    const region = AWS.config.region;
+    return `https://cognito-idp.${region}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}`;
+  },
   algorithms: ['RS256']
 });
 
@@ -268,7 +299,7 @@ app.get('/api/documents', async (req, res) => {
     console.log(`Retrieved ${rows.length} documents from database`);
     
     // Get S3 objects for additional metadata
-    const bucketName = process.env.S3_BUCKET_NAME || 'idrp-000001-dev';
+    const bucketName = process.env.S3_BUCKET_NAME;
     
     try {
       const s3Data = await s3.listObjectsV2({ Bucket: bucketName }).promise();
@@ -434,7 +465,7 @@ app.post('/api/upload', conditionalJwt, upload.single('file'), async (req, res) 
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const bucketName = process.env.S3_BUCKET_NAME || 'idrp-000001-dev';
+    const bucketName = process.env.S3_BUCKET_NAME;
     
     // Upload to S3
     const params = {
@@ -517,7 +548,7 @@ app.delete('/api/documents/:id', conditionalJwt, async (req, res) => {
     }
     
     const fileName = rows[0].title;
-    const bucketName = process.env.S3_BUCKET_NAME || 'idrp-000001-dev';
+    const bucketName = process.env.S3_BUCKET_NAME;
     
     // Delete from S3
     try {
@@ -643,37 +674,13 @@ const initializeApp = async () => {
     
     connection.release();
     
-    // Test S3 access with the configured profile
-    try {
-      const bucketName = process.env.S3_BUCKET_NAME || 'idrp-000001-dev';
-      console.log(`Testing S3 access to bucket ${bucketName} using profile ${process.env.AWS_PROFILE || 'default'}...`);
-      
-      // List objects in the bucket
-      const listResult = await s3.listObjectsV2({ Bucket: bucketName }).promise();
-      console.log(`Successfully listed ${listResult.Contents.length} objects in bucket ${bucketName}`);
-      
-      // Test presigned URL generation
-      if (listResult.Contents.length > 0) {
-        const firstKey = listResult.Contents[0].Key;
-        const url = s3.getSignedUrl('getObject', {
-          Bucket: bucketName,
-          Key: firstKey,
-          Expires: 3600
-        });
-        console.log(`Successfully generated presigned URL for ${firstKey}: ${url.substring(0, 50)}...`);
-      }
-    } catch (s3Error) {
-      console.error('S3 access test failed:', s3Error);
-    }
-    
     // Start the server
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`AWS Profile: ${process.env.AWS_PROFILE || 'default'}`);
-      console.log(`AWS Region: ${process.env.AWS_REGION || 'us-west-2'}`);
-      console.log(`S3 Bucket: ${process.env.S3_BUCKET_NAME || 'idrp-000001-dev'}`);
-      console.log(`Database: ${process.env.DB_HOST || 'idrp-database-01.cdouco6u6b8u.us-west-2.rds.amazonaws.com'}`);
+      console.log(`AWS Region: ${AWS.config.region}`);
+      console.log(`S3 Bucket: ${process.env.S3_BUCKET_NAME}`);
+      console.log(`Database: ${process.env.DB_HOST}`);
     });
     
     // Catch-all handler for any request that doesn't match the ones above
