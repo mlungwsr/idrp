@@ -21,7 +21,10 @@ export const getDocuments = async () => {
   try {
     const response = await api.get('/documents');
     console.log('Documents retrieved from API:', response.data);
-    return { success: true, data: response.data };
+    
+    // Ensure we're returning an array even if the API returns null or an object
+    const documents = Array.isArray(response.data) ? response.data : [];
+    return { success: true, data: documents };
   } catch (error) {
     console.error('Error fetching documents:', error);
     return { 

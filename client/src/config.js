@@ -8,5 +8,5 @@ export const cognitoConfig = {
 // API configuration
 export const apiConfig = {
   s3BucketName: 'idrp-000001-dev',
-  apiBaseUrl: 'http://localhost:5001/api'
+  apiBaseUrl: '/api'  // Changed from absolute URL to relative URL
 };
