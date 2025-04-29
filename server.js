@@ -320,30 +320,55 @@ setInterval(async () => {
 // Initialize Cognito Identity Service Provider
 const cognitoIdentityServiceProvider = new AWS.CognitoIdentityServiceProvider();
 
-// Configure JWT authentication middleware
-const checkJwt = jwt({
-  secret: jwksRsa.expressJwtSecret({
-    cache: true,
-    rateLimit: true,
-    jwksRequestsPerMinute: 5,
-    jwksUri: async () => {
-      const region = AWS.config.region;
-      return `https://cognito-idp.${region}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}/.well-known/jwks.json`;
-    }
-  }),
-  audience: process.env.COGNITO_CLIENT_ID,
-  issuer: async () => {
-    const region = AWS.config.region;
-    return `https://cognito-idp.${region}.amazonaws.com/${process.env.COGNITO_USER_POOL_ID}`;
-  },
-  algorithms: ['RS256']
-});
+// Function to create JWT middleware after parameters are loaded
+const createJwtMiddleware = () => {
+  // Ensure we have the required parameters
+  const region = AWS.config.region || 'us-west-2';
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  const clientId = process.env.COGNITO_CLIENT_ID;
+  
+  console.log(`Creating JWT middleware with region: ${region}, userPoolId: ${userPoolId}, clientId: ${clientId}`);
+  
+  if (!userPoolId) {
+    console.warn('COGNITO_USER_POOL_ID is not set. JWT authentication will fail.');
+  }
+  
+  if (!clientId) {
+    console.warn('COGNITO_CLIENT_ID is not set. JWT authentication will fail.');
+  }
+  
+  const jwksUri = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+  const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+  
+  console.log(`JWKS URI: ${jwksUri}`);
+  console.log(`Issuer: ${issuer}`);
+  
+  return jwt({
+    secret: jwksRsa.expressJwtSecret({
+      cache: true,
+      rateLimit: true,
+      jwksRequestsPerMinute: 5,
+      jwksUri: jwksUri
+    }),
+    audience: clientId,
+    issuer: issuer,
+    algorithms: ['RS256']
+  });
+};
+
+// Initialize checkJwt as null, will be set after parameters are loaded
+let checkJwt = null;
 
 // Create a conditional middleware for JWT checking
 const conditionalJwt = (req, res, next) => {
   // Skip JWT check in development mode
   if (process.env.NODE_ENV === 'production') {
-    return checkJwt(req, res, next);
+    if (checkJwt) {
+      return checkJwt(req, res, next);
+    } else {
+      console.warn('JWT middleware not initialized, skipping authentication');
+      return next();
+    }
   }
   // In development, proceed without authentication
   next();
@@ -714,6 +739,10 @@ const initializeApp = async () => {
     const region = process.env.AWS_REGION || 'us-west-2';
     AWS.config.update({ region });
     console.log(`AWS SDK configured to use region: ${region}`);
+    
+    // Initialize JWT middleware after parameters are loaded
+    checkJwt = createJwtMiddleware();
+    console.log('JWT middleware initialized');
     
     // Create the connection pool with IAM authentication
     pool = await createPool();
